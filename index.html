@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Get Your Fast Cash Offer | Calgary Home Pricing</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <script type="text/babel">
+const { useState, useEffect, useMemo, useRef } = React;
+
+// ============================================
+// CONFIGURATION - UPDATE THESE VALUES
+// ============================================
+const CITY_API = "https://data.calgary.ca/resource/4bsw-nn7w.json";
+const MAR_SHEET_URL =
+  "https://docs.google.com/spreadsheets/d/e/2PACX-1vTmGFNp9N6A-70xTzu-GQK80WzUzExVhjOM2nsrGrsq8Wv_s2AywjA79Nh550Sulgz96lGwrRJBOBnR/pub?output=csv";
+const GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/YOUR_FORM_ID/formResponse"; // Replace with your actual form ID
+
+// NEW: API endpoints for Serper and Hugging Face
+const SERPER_WORKER_URL = "https://serper-proxy.drew-448.workers.dev"; // Your Cloudflare Worker URL
+const HUGGING_FACE_TOKEN = ""; // Disabled for security - can enable via Worker later
+
+// Lucide React Icons (CheckCircle, AlertCircle)
+const CheckCircle = ({className})=>(
+  <svg className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+);
+const AlertCircle = ({className})=>(
+  <svg className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+);
+
+// Helper to calculate Calgary commission (7% first $100k, 3% balance + 5% GST)
+function calcCalgaryCommission(price) {
+  const first100k = Math.min(price, 100000);
+  const balance = Math.max(price - 100000, 0);
+  const baseCommission = (first100k * 0.07) + (balance * 0.03);
+  const withGST = baseCommission * 1.05; // Add 5% GST
+  return withGST;
+}
+
+const ASSUMPTIONS = {
+  conditionMult: { excellent: 1.1, good: 1.0, fair: 0.9, poor: 0.75, distressed: 0.6 },
+  retail: { 
+    closingCostPct: 0.01,
+    daysToClose: "45–75d" 
+  },
+  discount: { 
+    priceDiscountPct: 0.06,
+    closingCostPct: 0.008,
+    daysToClose: "25–50d" 
+  },
+  cash: {
+    multiplierByCondition: { 
+      excellent: 0.88,
+      good: 0.85,
+      fair: 0.82,
+      poor: 0.75,
+      distressed: 0.65
+    },
+    commissionPct: 0.0,
+    closingCostPct: 0.002,
+    daysToClose: "7–14d"
+  },
+  displayBandPct: 0.05,
+  marDefault: 1.07
+};
+
+const SELL_REASONS = [
+  { value: "asap", label: "Relocation / Sell ASAP" },
+  { value: "estate", label: "Inherited / Estate" },
+  { value: "repairs", label: "Major Repairs Needed" },
+  { value: "privacy", label: "Avoid Showings / Privacy" },
+  { value: "testing", label: "Just Testing the Market" },
+  { value: "financial", label: "Financial / Behind on Payments" },
+  { value: "downsizing", label: "Downsizing / Lifestyle" }
+];
+
+const CONDITIONS = [
+  { value: "excellent", label: "Excellent (updated)" },
+  { value: "good", label: "Good (well-kept)" },
+  { value: "fair", label: "Fair (dated)" },
+  { value: "poor", label: "Poor (repairs needed)" },
+  { value: "distressed", label: "Distressed (major work)" }
+];
+
+const TIMELINE_OPTIONS = [
+  { value: "within2weeks", label: "Within 2 weeks" },
+  { value: "within30days", label: "Within 30 days" },
+  { value: "30to60days", label: "30-60 days" },
+  { value: "flexible", label: "Flexible" }
+];
+
+const currency = (n)=>"$"+(Math.round(n).toLocaleString());
+
+function chooseBest(reason, condition){
+  if(reason === "financial") {
+    if(condition === "excellent" || condition === "good") return "discount";
+    return "cash";
+  }
+  
+  if(reason === "asap") {
+    if(condition === "excellent" || condition === "good") return "discount";
+    return "cash";
+  }
+  
+  if(reason === "repairs" || condition === "poor" || condition === "distressed") {
+    return "cash";
+  }
+  
+  if(reason === "privacy") {
+    return "cash";
+  }
+  
+  if(reason === "estate") {
+    if(condition === "poor" || condition === "distressed") return "cash";
+    return "discount";
+  }
+  
+  if(reason === "testing") {
+    return "retail";
+  }
+  
+  return "retail";
+}
+
+function getBestFitReason(reason, bestKey) {
+  if(bestKey === "cash") {
+    if(reason === "financial") return "Fast closing with no contingencies gives you the certainty you need.";
+    if(reason === "asap") return "Fastest path to closing - no repairs, no showings, no delays.";
+    if(reason === "repairs") return "Sell as-is without spending time or money on fixes.";
+    if(reason === "privacy") return "One viewing, no ongoing showings or strangers through your home.";
+    if(reason === "estate") return "Simplest option for inherited properties - handle remotely if needed.";
+    return "No repairs, no showings, no uncertainty - close in days.";
+  }
+  
+  if(bestKey === "discount") {
+    if(reason === "asap") return "Priced to move fast while still getting solid market value.";
+    if(reason === "estate") return "Quick sale with minimal involvement required.";
+    return "Good balance of speed and value for your timeline.";
+  }
+  
+  return "Given your timeline and market conditions, maximizing price makes sense.";
+}
+
+// ============================================
+// NEW: API FUNCTIONS FOR SERPER & HUGGING FACE
+// ============================================
+
+async function fetchMarketInsights(community) {
+  if (!SERPER_WORKER_URL || SERPER_WORKER_URL.includes('your-worker')) {
+    console.log('Serper Worker URL not configured - skipping market insights');
+    return null;
+  }
+
+  try {
+    // Check localStorage cache first (24hr cache)
+    const cacheKey = `market_${community}_${new Date().toISOString().split('T')[0]}`;
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+
+    const response = await fetch(SERPER_WORKER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        type: 'serper',
+        community: community 
+      })
+    });
+
+    if (!response.ok) throw new Error('Serper API failed');
+
+    const data = await response.json();
+    
+    // Cache the results
+    localStorage.setItem(cacheKey, JSON.stringify(data));
+    
+    return data;
+  } catch (error) {
+    console.error('Market insights error:', error);
+    return null;
+  }
+}
+
+async function fetchAIAnalysis(cityData, marketInsights, userInputs, options, bestKey) {
+  try {
+    // Build market context from Serper results
+    let marketContext = "No recent market data available.";
+    if (marketInsights && marketInsights.organic && marketInsights.organic.length > 0) {
+      marketContext = marketInsights.organic
+        .slice(0, 3)
+        .map(r => `• ${r.snippet}`)
+        .join('\n');
+    }
+
+    const prompt = `You are a Calgary real estate expert. Analyze this data and provide a 2-3 sentence personalized, encouraging summary for a seller considering their options.
+
+Property: ${cityData.address}
+Community: ${cityData.community}
+Condition: ${userInputs.condition}
+Reason for selling: ${SELL_REASONS.find(r => r.value === userInputs.reason)?.label || userInputs.reason}
+Timeline: ${TIMELINE_OPTIONS.find(t => t.value === userInputs.timeline)?.label || userInputs.timeline}
+
+Recent market news for ${cityData.community}:
+${marketContext}
+
+Recommended strategy: ${bestKey === 'retail' ? 'Full MLS Listing' : bestKey === 'discount' ? 'Quick-List Strategy' : 'Cash Sale'}
+Estimated net proceeds: ${currency(options[bestKey].netLow)} - ${currency(options[bestKey].netHigh)}
+
+Provide a brief, helpful, honest assessment of their selling options based on current market conditions. Be supportive and clear about what they can expect.`;
+
+    // Call Worker instead of HuggingFace directly
+    const response = await fetch(SERPER_WORKER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        type: 'ai',
+        prompt: prompt
+      })
+    });
+
+    if (!response.ok) throw new Error('AI analysis failed');
+
+    const result = await response.json();
+    return result.analysis || null;
+  } catch (error) {
+    console.error('AI analysis error:', error);
+    return null;
+  }
+}
+
+// ============================================
+// MAIN APP COMPONENT
+// ============================================
+
+function App() {
+  const [addr, setAddr] = useState("");
+  const [suggestions, setSuggestions] = useState([]);
+  const [fetchingAddr, setFetchingAddr] = useState(false);
+  const [cityData, setCityData] = useState(null);
+  const [marTable, setMarTable] = useState({ default: ASSUMPTIONS.marDefault });
+  const [condition, setCondition] = useState("");
+  const [reason, setReason] = useState("");
+  const [timeline, setTimeline] = useState("");
+  const [show, setShow] = useState(false);
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 768);
+  
+  // NEW: State for market insights and AI analysis
+  const [marketInsights, setMarketInsights] = useState(null);
+  const [aiAnalysis, setAIAnalysis] = useState(null);
+  const [loadingInsights, setLoadingInsights] = useState(false);
+
+  const resultsRef = useRef(null);
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(()=>{
+    if(resultsRef.current && show){
+      setTimeout(()=>resultsRef.current.scrollIntoView({behavior:"smooth",block:"start"}),100);
+    }
+  },[show]);
+
+  useEffect(()=>{
+    fetch(MAR_SHEET_URL)
+      .then(r=>r.text())
+      .then(t=>{
+        const rows=t.split('\n').slice(1);
+        const map={};
+        for(let row of rows){
+          const [c,v]=row.split(',');
+          if(c&&v) map[c.trim().toLowerCase()]=parseFloat(v);
+        }
+        map.default ??= ASSUMPTIONS.marDefault;
+        setMarTable(map);
+      }).catch(()=>setMarTable({default:ASSUMPTIONS.marDefault}));
+  },[]);
+
+  const fetchSuggestions = (q)=>{
+    if((q||"").length<4){ setSuggestions([]); return; }
+    const encoded = encodeURIComponent(q.toUpperCase());
+    fetch(`${CITY_API}?$select=address&$where=upper(address)%20like%20'%25${encoded}%25'&$limit=10`)
+      .then(r=>r.json())
+      .then(d=>setSuggestions([...new Set(d.map(x=>x.address))]))
+      .catch(()=>setSuggestions([]));
+  };
+
+  const selectAddress = (address)=>{
+    setAddr(address); setSuggestions([]); setFetchingAddr(true);
+    const enc = encodeURIComponent(address.toUpperCase());
+    fetch(`${CITY_API}?$select=address,comm_name,assessed_value&$where=upper(address)%20like%20'%25${enc}%25'&$limit=1`)
+      .then(r=>r.json())
+      .then(d=>{
+        if(d.length){
+          const it=d[0];
+          setCityData({ address:it.address, community:(it.comm_name||"").toLowerCase(), assessed:parseFloat(it.assessed_value||"0") });
+        }else setCityData(null);
+      })
+      .catch(()=>{
+        setCityData(null);
+        alert("Couldn't find that address in City database. Try: '123 Main Street SW' format");
+      })
+      .finally(()=>setFetchingAddr(false));
+  };
+
+  useEffect(()=>{ const t=setTimeout(()=>fetchSuggestions(addr),300); return ()=>clearTimeout(t); },[addr]);
+
+  const marketCore = useMemo(()=>{
+    if(!cityData?.assessed) return null;
+    const mar = marTable[cityData.community] ?? marTable.default;
+    const condMult = ASSUMPTIONS.conditionMult[condition] ?? 1.0;
+    return { mar, condMult, market: cityData.assessed * mar * condMult };
+  },[cityData, marTable, condition]);
+
+  const options = useMemo(()=>{
+    if(!marketCore) return null;
+    const band=ASSUMPTIONS.displayBandPct;
+    
+    const retail=(()=>{ 
+      const g=marketCore.market;
+      const f=calcCalgaryCommission(g);
+      const c=g*ASSUMPTIONS.retail.closingCostPct;
+      const n=g-f-c; 
+      return {
+        key:"retail",
+        title:"List on MLS (Full Retail)",
+        gross:g,
+        fee:f,
+        close:c,
+        net:n,
+        speed:ASSUMPTIONS.retail.daysToClose,
+        notes:["Max exposure & price","Prep, showings, conditions typical"]
+      };
+    })();
+    
+    const discount=(()=>{ 
+      const b=marketCore.market*(1-ASSUMPTIONS.discount.priceDiscountPct);
+      const f=calcCalgaryCommission(b) * 0.85;
+      const c=b*ASSUMPTIONS.discount.closingCostPct;
+      const n=b-f-c; 
+      return {
+        key:"discount",
+        title:"Quick-List (As-Is / Minimal Prep)",
+        gross:b,
+        fee:f,
+        close:c,
+        net:n,
+        speed:ASSUMPTIONS.discount.daysToClose,
+        notes:["Fewer showings","Some price tradeoff for speed"]
+      };
+    })();
+    
+    const cash=(()=>{ 
+      const m=ASSUMPTIONS.cash.multiplierByCondition[condition]??0.85;
+      const b=marketCore.market*m;
+      const f=b*ASSUMPTIONS.cash.commissionPct;
+      const c=b*ASSUMPTIONS.cash.closingCostPct;
+      const n=b-f-c; 
+      return {
+        key:"cash",
+        title:"Verified Cash Buyer (No Showings)",
+        gross:b,
+        fee:f,
+        close:c,
+        net:n,
+        speed:ASSUMPTIONS.cash.daysToClose,
+        notes:["Fast, certain closing","Lower price = speed & convenience","As-is condition accepted"]
+      };
+    })();
+    
+    const addRange=o=>({
+      ...o,
+      grossLow:o.gross*(1-band),
+      grossHigh:o.gross*(1+band),
+      netLow:(o.gross*(1-band))-o.fee-o.close,
+      netHigh:(o.gross*(1+band))-o.fee-o.close
+    });
+    
+    return {retail:addRange(retail),discount:addRange(discount),cash:addRange(cash)};
+  },[marketCore,condition]);
+
+  const bestKey = useMemo(()=>chooseBest(reason,condition),[reason,condition]);
+  const ready = !!(cityData?.assessed && condition && reason && timeline);
+
+  // NEW: Fetch market insights when "See My Options" is clicked
+  const handleShowOptions = async () => {
+    setShow(true);
+    setLoadingInsights(true);
+    setMarketInsights(null);
+    setAIAnalysis(null);
+
+    // Fetch market insights in background
+    const insights = await fetchMarketInsights(cityData.community);
+    setMarketInsights(insights);
+
+    // Fetch AI analysis if we have insights
+    if (insights && options) {
+      const analysis = await fetchAIAnalysis(
+        cityData,
+        insights,
+        { condition, reason, timeline },
+        options,
+        bestKey
+      );
+      setAIAnalysis(analysis);
+    }
+
+    setLoadingInsights(false);
+  };
+
+  const generatePDF = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    
+    // Header
+    doc.setFontSize(20);
+    doc.setFont(undefined, 'bold');
+    doc.text("Calgary Home Pricing Report", 20, 20);
+    
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    doc.text(`Property: ${cityData.address}`, 20, 30);
+    doc.text(`Community: ${cityData.community.toUpperCase()}`, 20, 35);
+    doc.text(`City Assessment: ${currency(cityData.assessed)}`, 20, 40);
+    doc.text(`Condition: ${condition}`, 20, 45);
+    doc.text(`Timeline: ${TIMELINE_OPTIONS.find(t=>t.value===timeline)?.label}`, 20, 50);
+    
+    // Market Analysis
+    doc.setFontSize(14);
+    doc.setFont(undefined, 'bold');
+    doc.text("Market Analysis", 20, 60);
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    doc.text(`Market Adjustment Ratio: ${((marketCore.mar-1)*100).toFixed(1)}%`, 20, 68);
+    doc.text(`Condition Multiplier: ${marketCore.condMult}x`, 20, 73);
+    doc.text(`Estimated Market Value: ${currency(marketCore.market)}`, 20, 78);
+    
+    // NEW: Add market insights to PDF
+    let yPos = 88;
+    if (marketInsights && marketInsights.organic && marketInsights.organic.length > 0) {
+      doc.setFontSize(12);
+      doc.setFont(undefined, 'bold');
+      doc.text("Recent Market News", 20, yPos);
+      yPos += 6;
+      
+      doc.setFontSize(9);
+      doc.setFont(undefined, 'normal');
+      marketInsights.organic.slice(0, 2).forEach(item => {
+        const wrapped = doc.splitTextToSize(item.snippet, 170);
+        doc.text(`• ${wrapped[0]}`, 20, yPos);
+        yPos += 5;
+      });
+      yPos += 5;
+    }
+    
+    // NEW: Add AI analysis to PDF
+    if (aiAnalysis) {
+      doc.setFontSize(12);
+      doc.setFont(undefined, 'bold');
+      doc.text("AI Market Analysis", 20, yPos);
+      yPos += 6;
+      
+      doc.setFontSize(9);
+      doc.setFont(undefined, 'normal');
+      const wrapped = doc.splitTextToSize(aiAnalysis, 170);
+      wrapped.forEach(line => {
+        doc.text(line, 20, yPos);
+        yPos += 5;
+      });
+      yPos += 5;
+    }
+    
+    // Options
+    yPos += 5;
+    ["retail", "discount", "cash"].forEach((key, idx) => {
+      const o = options[key];
+      const isBest = key === bestKey;
+      
+      if (idx > 0) yPos += 45;
+      
+      doc.setFontSize(12);
+      doc.setFont(undefined, 'bold');
+      doc.text(o.title + (isBest ? " (RECOMMENDED)" : ""), 20, yPos);
+      
+      doc.setFontSize(9);
+      doc.setFont(undefined, 'normal');
+      doc.text(`Speed: ${o.speed}`, 20, yPos + 6);
+      doc.text(`Sale Price Range: ${currency(o.grossLow)} - ${currency(o.grossHigh)}`, 20, yPos + 12);
+      doc.text(`Commission/Fees: ${currency(o.fee)}`, 20, yPos + 18);
+      doc.text(`Closing Costs: ${currency(o.close)}`, 20, yPos + 24);
+      doc.setFont(undefined, 'bold');
+      doc.text(`Estimated Net: ${currency(o.netLow)} - ${currency(o.netHigh)}`, 20, yPos + 30);
+      doc.setFont(undefined, 'normal');
+      doc.text(`• ${o.notes[0]}`, 25, yPos + 36);
+      if (o.notes[1]) doc.text(`• ${o.notes[1]}`, 25, yPos + 41);
+    });
+    
+    // Disclaimer
+    doc.setFontSize(8);
+    doc.text("Disclaimer: Estimates based on City assessment and market data. Actual values may vary.", 20, 270);
+    doc.text("Contact Drew for verified comparables and personalized analysis.", 20, 275);
+    
+    return doc;
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const name = formData.get('name');
+    const phone = formData.get('phone');
+    const email = formData.get('email');
+    
+    try {
+      // Generate PDF
+      const pdf = generatePDF();
+      const pdfBlob = pdf.output('blob');
+      
+      // Create FormData for Google Forms
+      const gFormData = new FormData();
+      // Replace these entry IDs with your actual Google Form field IDs
+      gFormData.append('entry.NAME_FIELD_ID', name); 
+      gFormData.append('entry.PHONE_FIELD_ID', phone);
+      gFormData.append('entry.EMAIL_FIELD_ID', email);
+      gFormData.append('entry.ADDRESS_FIELD_ID', cityData.address);
+      gFormData.append('entry.COMMUNITY_FIELD_ID', cityData.community);
+      gFormData.append('entry.CONDITION_FIELD_ID', condition);
+      gFormData.append('entry.REASON_FIELD_ID', reason);
+      gFormData.append('entry.TIMELINE_FIELD_ID', timeline);
+      gFormData.append('entry.RETAIL_NET_FIELD_ID', `${currency(options.retail.netLow)} - ${currency(options.retail.netHigh)}`);
+      gFormData.append('entry.DISCOUNT_NET_FIELD_ID', `${currency(options.discount.netLow)} - ${currency(options.discount.netHigh)}`);
+      gFormData.append('entry.CASH_NET_FIELD_ID', `${currency(options.cash.netLow)} - ${currency(options.cash.netHigh)}`);
+      
+      // Submit to Google Forms (no-cors mode)
+      fetch(GOOGLE_FORM_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        body: gFormData
+      });
+      
+      // Download PDF
+      pdf.save(`Calgary_Home_Report_${cityData.address.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
+      
+      // Show success message
+      alert("✅ Success! Your detailed report has been downloaded. Check your email - I'll be in touch within 24 hours with verified comparables and your cash offer.");
+      
+      // Reset form
+      setShow(false);
+      
+    } catch (error) {
+      console.error('Submission error:', error);
+      alert("Report generated! I'll be in touch within 24 hours.");
+    }
+  };
+
+  return (
+    <div className="max-w-5xl mx-auto p-4 md:p-6">
+      {/* Hero Section */}
+      <div className="text-center mb-6 md:mb-8">
+        <h1 className="text-3xl md:text-4xl font-bold text-slate-900 mb-2 md:mb-3">
+          Facing Foreclosure? Behind on Payments?<br className="hidden md:block"/> Need to Sell Fast?
+        </h1>
+        <p className="text-lg md:text-xl text-slate-600 mb-2">
+          Get your <strong>actual cash offer</strong> in 60 seconds
+        </p>
+        <p className="text-xs md:text-sm text-slate-500">
+          Based on City of Calgary official assessment • No obligation • Licensed Realtor
+        </p>
+      </div>
+
+      {/* Trust Signals */}
+      <div className="flex flex-wrap justify-center gap-4 md:gap-8 mb-6 text-xs md:text-sm text-slate-600">
+        <div className="flex items-center gap-2">
+          <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" />
+          <span>Licensed AB Realtor</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" />
+          <span>100+ Families Helped</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" />
+          <span>Same-Day Cash Offers</span>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow p-4 md:p-6 mb-6">
+        <label className="block text-sm font-semibold text-slate-700 mb-2">Street Address (Calgary)</label>
+        <div className="relative">
+          <input className="w-full border rounded-lg p-3 focus:ring-2 focus:ring-blue-600 text-sm md:text-base"
+                 placeholder="Start typing your address…" value={addr}
+                 onChange={(e)=>setAddr(e.target.value)} />
+          {suggestions.length>0 && (
+            <ul className="absolute z-10 bg-white border rounded-lg mt-1 w-full max-h-64 overflow-y-auto shadow">
+              {suggestions.map(s=>(
+                <li key={s} onClick={()=>selectAddress(s)} className="px-3 py-2 hover:bg-blue-50 cursor-pointer text-sm">{s}</li>
+              ))}
+            </ul>
+          )}
+          {fetchingAddr && <div className="text-xs text-blue-600 mt-1">Fetching City assessment…</div>}
+          {cityData && !fetchingAddr && (
+            <div className="text-xs text-green-700 mt-1">
+              ✓ Found {cityData.community.toUpperCase()} — City Assessed: {currency(cityData.assessed)}
+            </div>
+          )}
+        </div>
+
+        {/* Map */}
+        {cityData && !fetchingAddr && (
+          <iframe
+            key={cityData.address}
+            title="map"
+            width="100%"
+            height={windowWidth < 768 ? "250" : "350"}
+            style={{
+              border: 0,
+              borderRadius: "12px",
+              marginTop: "12px",
+              boxShadow: "0 2px 10px rgba(0,0,0,0.1)",
+            }}
+            loading="lazy"
+            allowFullScreen
+            src={`https://www.google.com/maps?q=${encodeURIComponent(
+              cityData.address + ", Calgary AB"
+            )}&output=embed`}
+          ></iframe>
+        )}
+
+        {/* Progress Indicator */}
+        {cityData && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-4 mb-4">
+            <div className="flex items-center justify-between text-xs md:text-sm flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" />
+                <span className="text-slate-600">Address</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {condition ? <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" /> : <div className="w-4 h-4 md:w-5 md:h-5 rounded-full border-2 border-slate-300 flex-shrink-0" />}
+                <span className={condition ? "text-slate-600" : "text-slate-400"}>Condition</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {reason ? <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" /> : <div className="w-4 h-4 md:w-5 md:h-5 rounded-full border-2 border-slate-300 flex-shrink-0" />}
+                <span className={reason ? "text-slate-600" : "text-slate-400"}>Reason</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {timeline ? <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" /> : <div className="w-4 h-4 md:w-5 md:h-5 rounded-full border-2 border-slate-300 flex-shrink-0" />}
+                <span className={timeline ? "text-slate-600" : "text-slate-400"}>Timeline</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="grid md:grid-cols-3 gap-4 mt-4">
+          <div>
+            <label className="block text-sm font-semibold mb-2">Condition</label>
+            <select className="w-full border rounded-lg p-3 text-sm md:text-base" value={condition} onChange={(e)=>setCondition(e.target.value)}>
+              <option value="">Select condition…</option>
+              {CONDITIONS.map(c=><option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-semibold mb-2">Reason for Selling</label>
+            <select className="w-full border rounded-lg p-3 text-sm md:text-base" value={reason} onChange={(e)=>setReason(e.target.value)}>
+              <option value="">Select reason…</option>
+              {SELL_REASONS.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-semibold mb-2">Timeline to Close</label>
+            <select className="w-full border rounded-lg p-3 text-sm md:text-base" value={timeline} onChange={(e)=>setTimeline(e.target.value)}>
+              <option value="">Select timeline…</option>
+              {TIMELINE_OPTIONS.map(t=><option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <button disabled={!ready} onClick={handleShowOptions}
+          className={`mt-4 px-5 py-3 rounded-lg font-semibold w-full md:w-auto text-sm md:text-base ${ready?"bg-blue-600 text-white hover:bg-blue-700":"bg-slate-300 text-slate-500 cursor-not-allowed"}`}>
+          See My Options
+        </button>
+      </div>
+
+      {show && marketCore && options && (
+        <>
+          {/* City Assessment Disclaimer */}
+          <div className="bg-amber-50 border-l-4 border-amber-400 p-4 mb-6 rounded">
+            <div className="flex items-start">
+              <AlertCircle className="w-5 h-5 text-amber-600 mr-3 mt-0.5 flex-shrink-0" />
+              <div className="text-xs md:text-sm text-amber-900">
+                <strong>Important:</strong> City assessments are based on 2025 data 
+                and assume average condition. Pricing is calculated based on increases/decreases in pricing per community. For distressed properties or those needing significant repairs, 
+                actual market value may differ. We'll verify with current comparable sales upon viewing the property in person.
+              </div>
+            </div>
+          </div>
+
+          {/* NEW: Market Insights Section */}
+          {loadingInsights && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+              <div className="flex items-center justify-center gap-3">
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                <span className="text-sm text-blue-800">Analyzing current market conditions...</span>
+              </div>
+            </div>
+          )}
+
+          {marketInsights && marketInsights.organic && marketInsights.organic.length > 0 && (
+            <div className="bg-white rounded-2xl shadow p-4 md:p-6 mb-6">
+              <h3 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">
+                📰 Recent Market News for {cityData.community.toUpperCase()}
+              </h3>
+              <div className="space-y-3">
+                {marketInsights.organic.slice(0, 3).map((item, idx) => (
+                  <div key={idx} className="border-l-2 border-blue-500 pl-3">
+                    <a href={item.link} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-blue-600 hover:underline">
+                      {item.title}
+                    </a>
+                    <p className="text-xs text-slate-600 mt-1">{item.snippet}</p>
+                    <span className="text-xs text-slate-400">{item.date}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* NEW: AI Analysis Section */}
+          {aiAnalysis && (
+            <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-2xl shadow p-4 md:p-6 mb-6">
+              <h3 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">
+                🤖 AI Market Analysis
+              </h3>
+              <p className="text-sm text-slate-700 leading-relaxed">
+                {aiAnalysis}
+              </p>
+            </div>
+          )}
+
+          <div ref={resultsRef} className="bg-white rounded-2xl shadow p-4 md:p-6 mb-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+              <Stat label="Community" value={cityData.community.toUpperCase()} />
+              <Stat label="City Assessed" value={currency(cityData.assessed)} />
+              <Stat label="MAR vs City" value={(marketCore.mar>=1?"+":"")+((marketCore.mar-1)*100).toFixed(1)+"%"} />
+              <Stat label="Condition ×" value={marketCore.condMult.toFixed(2)} />
+            </div>
+            <p className="text-xs md:text-sm text-slate-600 mt-3">Core Market Value: <strong>{currency(marketCore.market)}</strong></p>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-4 md:gap-6 mb-6">
+            {["retail","discount","cash"].map(k=>{
+              const o=options[k];
+              const isBest=k===bestKey;
+              return(
+                <div key={k} className={`rounded-2xl shadow bg-white p-4 md:p-6 border ${isBest?"border-amber-400 border-2":"border-transparent"}`}>
+                  {isBest && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-3">
+                      <div className="flex items-start flex-wrap gap-2">
+                        <span className="text-xs font-semibold text-amber-700 bg-amber-100 px-2 py-1 rounded-full flex-shrink-0">
+                          Best Fit
+                        </span>
+                        <p className="text-xs text-amber-800 flex-1">
+                          {getBestFitReason(reason, bestKey)}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex justify-between items-start mb-1">
+                    <h3 className="font-bold text-slate-800 text-sm md:text-base">{o.title}</h3>
+                  </div>
+                  <p className="text-xs md:text-sm text-slate-500 mb-3">Speed: {o.speed}</p>
+                  <div className="space-y-2 text-xs md:text-sm">
+                    <Row label="Estimated Sale Price" value={`${currency(o.grossLow)} – ${currency(o.grossHigh)}`} strong />
+                    <Row label="Commission/Fees" value={currency(o.fee)} />
+                    <Row label="Closing Costs" value={currency(o.close)} />
+                    <div className="border-t pt-2 mt-2">
+                      <Row label="Estimated Net" value={`${currency(o.netLow)} – ${currency(o.netHigh)}`} strong big />
+                    </div>
+                  </div>
+                  <ul className="mt-4 space-y-1 text-xs text-slate-600">
+                    {o.notes.map((n,i)=><li key={i} className="flex items-start gap-1"><span>•</span><span>{n}</span></li>)}
+                  </ul>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="bg-white rounded-2xl shadow p-4 md:p-6">
+            <h3 className="text-lg md:text-xl font-bold mb-2">Want exact numbers + next steps?</h3>
+            <p className="text-sm md:text-base text-slate-600 mb-4">I'll send verified comparables and (if you want) a same-day cash offer.</p>
+            <form onSubmit={handleSubmit} className="grid md:grid-cols-3 gap-3">
+              <input required name="name" placeholder="Name" className="border rounded-lg p-3 text-sm md:text-base" />
+              <input required name="phone" placeholder="Phone" className="border rounded-lg p-3 text-sm md:text-base" />
+              <input required name="email" type="email" placeholder="Email" className="border rounded-lg p-3 text-sm md:text-base" />
+              <button className="md:col-span-3 bg-blue-600 text-white font-semibold rounded-lg p-3 mt-2 hover:bg-blue-700 text-sm md:text-base">
+                Get My Detailed Report (PDF)
+              </button>
+            </form>
+            <p className="text-xs text-slate-500 mt-2">🔒 Private & confidential • Licensed Alberta Realtor</p>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Stat({label,value}){
+  return(
+    <div className="bg-slate-50 rounded-xl p-3 md:p-4">
+      <div className="text-xs uppercase text-slate-500 mb-1">{label}</div>
+      <div className="text-sm md:text-lg font-bold text-slate-800 break-words">{value}</div>
+    </div>
+  );
+}
+
+function Row({label,value,strong,big}){
+  return(
+    <div className="flex justify-between gap-2">
+      <div className="text-slate-600">{label}</div>
+      <div className={`${strong?"font-bold":""} ${big?"text-base md:text-lg":"text-xs md:text-sm"} text-right`}>{value}</div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+  </script>
+</body>
+</html>
