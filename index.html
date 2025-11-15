@@ -161,18 +161,40 @@ async function fetchAIAnalysis(cityData, userInputs, options, bestKey) {
   }
 
   try {
-    const prompt = `You are a Calgary real estate expert. Analyze this data and provide a 2-3 sentence personalized, encouraging summary for a seller considering their options.
+    const strategyName = bestKey === 'retail' ? 'List on MLS (Full Retail)' : 
+                        bestKey === 'discount' ? 'Quick-List (As-Is / Minimal Prep)' : 
+                        'Verified Cash Buyer (No Showings)';
 
-Property: ${cityData.address}
+    const prompt = `You are a Calgary real estate expert analyzing seller options for November 2025.
+
+PROPERTY DETAILS:
+Address: ${cityData.address}
 Community: ${cityData.community}
-Condition: ${userInputs.condition}
-Reason for selling: ${SELL_REASONS.find(r => r.value === userInputs.reason)?.label || userInputs.reason}
-Timeline: ${TIMELINE_OPTIONS.find(t => t.value === userInputs.timeline)?.label || userInputs.timeline}
+City Assessment: ${currency(cityData.assessed)}
+Property Condition: ${userInputs.condition}
+Seller Timeline: ${TIMELINE_OPTIONS.find(t => t.value === userInputs.timeline)?.label || userInputs.timeline}
+Reason for Selling: ${SELL_REASONS.find(r => r.value === userInputs.reason)?.label || userInputs.reason}
 
-Recommended strategy: ${bestKey === 'retail' ? 'Full MLS Listing' : bestKey === 'discount' ? 'Quick-List Strategy' : 'Cash Sale'}
-Estimated net proceeds: ${currency(options[bestKey].netLow)} - ${currency(options[bestKey].netHigh)}
+THREE SELLING OPTIONS ANALYZED:
 
-Provide a brief, helpful, honest assessment of their selling options based on current market conditions. Be supportive and clear about what they can expect.`;
+1) List on MLS (Full Retail):
+   - Speed: ${options.retail.timeframe}
+   - Net Proceeds: ${currency(options.retail.netLow)} - ${currency(options.retail.netHigh)}
+   - Best for: Maximum price, not urgent timeline
+
+2) Quick-List (As-Is / Minimal Prep):
+   - Speed: ${options.discount.timeframe}
+   - Net Proceeds: ${currency(options.discount.netLow)} - ${currency(options.discount.netHigh)}
+   - Best for: Balance of speed and price
+
+3) Verified Cash Buyer (No Showings):
+   - Speed: ${options.cash.timeframe}
+   - Net Proceeds: ${currency(options.cash.netLow)} - ${currency(options.cash.netHigh)}
+   - Best for: Maximum speed, certainty, convenience
+
+OUR RECOMMENDED STRATEGY: ${strategyName}
+
+TASK: Write 2-3 sentences explaining why "${strategyName}" is the best match for this seller's situation (timeline: ${userInputs.timeline}, condition: ${userInputs.condition}, reason: ${userInputs.reason}). Be specific about how their needs align with the recommended strategy. Be encouraging and honest about what they can expect.`;
 
     const response = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
       method: 'POST',
