@@ -24,9 +24,9 @@ const MAR_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vTmGFNp9N6A-70xTzu-GQK80WzUzExVhjOM2nsrGrsq8Wv_s2AywjA79Nh550Sulgz96lGwrRJBOBnR/pub?output=csv";
 const GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/YOUR_FORM_ID/formResponse"; // Replace with your actual form ID
 
-// NEW: API endpoints for Serper and Hugging Face
-const SERPER_WORKER_URL = "https://serper-proxy.drew-448.workers.dev"; // Your Cloudflare Worker URL
-const HUGGING_FACE_TOKEN = ""; // Disabled for security - can enable via Worker later
+// GEMINI API - GET FREE KEY AT: https://aistudio.google.com/apikey
+const GEMINI_API_KEY = "AIzaSyC9udD6Ttkx_FAUclcn4QAMVqHXLiyLF5o"; // Replace with your free Gemini API key
+const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent";
 
 // Lucide React Icons (CheckCircle, AlertCircle)
 const CheckCircle = ({className})=>(
@@ -150,57 +150,17 @@ function getBestFitReason(reason, bestKey) {
 }
 
 // ============================================
-// NEW: API FUNCTIONS FOR SERPER & HUGGING FACE
+// ============================================
+// AI ANALYSIS FUNCTION USING GEMINI
 // ============================================
 
-async function fetchMarketInsights(community) {
-  if (!SERPER_WORKER_URL || SERPER_WORKER_URL.includes('your-worker')) {
-    console.log('Serper Worker URL not configured - skipping market insights');
+async function fetchAIAnalysis(cityData, userInputs, options, bestKey) {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_API_KEY_HERE") {
+    console.log('Gemini API key not configured - skipping AI analysis');
     return null;
   }
 
   try {
-    // Check localStorage cache first (24hr cache)
-    const cacheKey = `market_${community}_${new Date().toISOString().split('T')[0]}`;
-    const cached = localStorage.getItem(cacheKey);
-    if (cached) {
-      return JSON.parse(cached);
-    }
-
-    const response = await fetch(SERPER_WORKER_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        type: 'serper',
-        community: community 
-      })
-    });
-
-    if (!response.ok) throw new Error('Serper API failed');
-
-    const data = await response.json();
-    
-    // Cache the results
-    localStorage.setItem(cacheKey, JSON.stringify(data));
-    
-    return data;
-  } catch (error) {
-    console.error('Market insights error:', error);
-    return null;
-  }
-}
-
-async function fetchAIAnalysis(cityData, marketInsights, userInputs, options, bestKey) {
-  try {
-    // Build market context from Serper results
-    let marketContext = "No recent market data available.";
-    if (marketInsights && marketInsights.organic && marketInsights.organic.length > 0) {
-      marketContext = marketInsights.organic
-        .slice(0, 3)
-        .map(r => `• ${r.snippet}`)
-        .join('\n');
-    }
-
     const prompt = `You are a Calgary real estate expert. Analyze this data and provide a 2-3 sentence personalized, encouraging summary for a seller considering their options.
 
 Property: ${cityData.address}
@@ -209,28 +169,28 @@ Condition: ${userInputs.condition}
 Reason for selling: ${SELL_REASONS.find(r => r.value === userInputs.reason)?.label || userInputs.reason}
 Timeline: ${TIMELINE_OPTIONS.find(t => t.value === userInputs.timeline)?.label || userInputs.timeline}
 
-Recent market news for ${cityData.community}:
-${marketContext}
-
 Recommended strategy: ${bestKey === 'retail' ? 'Full MLS Listing' : bestKey === 'discount' ? 'Quick-List Strategy' : 'Cash Sale'}
 Estimated net proceeds: ${currency(options[bestKey].netLow)} - ${currency(options[bestKey].netHigh)}
 
 Provide a brief, helpful, honest assessment of their selling options based on current market conditions. Be supportive and clear about what they can expect.`;
 
-    // Call Worker instead of HuggingFace directly
-    const response = await fetch(SERPER_WORKER_URL, {
+    const response = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        type: 'ai',
-        prompt: prompt
+      body: JSON.stringify({
+        contents: [{
+          parts: [{ text: prompt }]
+        }]
       })
     });
 
-    if (!response.ok) throw new Error('AI analysis failed');
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Gemini API failed: ${error}`);
+    }
 
-    const result = await response.json();
-    return result.analysis || null;
+    const data = await response.json();
+    return data.candidates[0].content.parts[0].text;
   } catch (error) {
     console.error('AI analysis error:', error);
     return null;
@@ -253,8 +213,7 @@ function App() {
   const [show, setShow] = useState(false);
   const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 768);
   
-  // NEW: State for market insights and AI analysis
-  const [marketInsights, setMarketInsights] = useState(null);
+  // State for AI analysis
   const [aiAnalysis, setAIAnalysis] = useState(null);
   const [loadingInsights, setLoadingInsights] = useState(false);
 
@@ -397,18 +356,12 @@ function App() {
   const handleShowOptions = async () => {
     setShow(true);
     setLoadingInsights(true);
-    setMarketInsights(null);
     setAIAnalysis(null);
 
-    // Fetch market insights in background
-    const insights = await fetchMarketInsights(cityData.community);
-    setMarketInsights(insights);
-
-    // Fetch AI analysis if we have insights
-    if (insights && options) {
+    // Fetch AI analysis directly (no market insights needed)
+    if (options) {
       const analysis = await fetchAIAnalysis(
         cityData,
-        insights,
         { condition, reason, timeline },
         options,
         bestKey
@@ -448,23 +401,8 @@ function App() {
     
     // NEW: Add market insights to PDF
     let yPos = 88;
-    if (marketInsights && marketInsights.organic && marketInsights.organic.length > 0) {
-      doc.setFontSize(12);
-      doc.setFont(undefined, 'bold');
-      doc.text("Recent Market News", 20, yPos);
-      yPos += 6;
-      
-      doc.setFontSize(9);
-      doc.setFont(undefined, 'normal');
-      marketInsights.organic.slice(0, 2).forEach(item => {
-        const wrapped = doc.splitTextToSize(item.snippet, 170);
-        doc.text(`• ${wrapped[0]}`, 20, yPos);
-        yPos += 5;
-      });
-      yPos += 5;
-    }
     
-    // NEW: Add AI analysis to PDF
+    // Add AI analysis to PDF
     if (aiAnalysis) {
       doc.setFontSize(12);
       doc.setFont(undefined, 'bold');
@@ -714,26 +652,7 @@ function App() {
             </div>
           )}
 
-          {marketInsights && marketInsights.organic && marketInsights.organic.length > 0 && (
-            <div className="bg-white rounded-2xl shadow p-4 md:p-6 mb-6">
-              <h3 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">
-                📰 Recent Market News for {cityData.community.toUpperCase()}
-              </h3>
-              <div className="space-y-3">
-                {marketInsights.organic.slice(0, 3).map((item, idx) => (
-                  <div key={idx} className="border-l-2 border-blue-500 pl-3">
-                    <a href={item.link} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-blue-600 hover:underline">
-                      {item.title}
-                    </a>
-                    <p className="text-xs text-slate-600 mt-1">{item.snippet}</p>
-                    <span className="text-xs text-slate-400">{item.date}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* NEW: AI Analysis Section */}
+          {/* AI Analysis Section */}
           {aiAnalysis && (
             <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-2xl shadow p-4 md:p-6 mb-6">
               <h3 className="text-lg font-bold text-slate-900 mb-3 flex items-center gap-2">
