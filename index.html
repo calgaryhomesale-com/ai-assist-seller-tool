@@ -25,7 +25,7 @@ const MAR_SHEET_URL =
 const GOOGLE_FORM_URL = "https://docs.google.com/forms/d/e/YOUR_FORM_ID/formResponse"; // Replace with your actual form ID
 
 // GEMINI API - GET FREE KEY AT: https://aistudio.google.com/apikey
-const GEMINI_API_KEY = "AIzaSyC9udD6Ttkx_FAUclcn4QAMVqHXLiyLF5o"; // Replace with your free Gemini API key
+const GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"; // Replace with your free Gemini API key
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent";
 
 // Lucide React Icons (CheckCircle, AlertCircle)
@@ -155,7 +155,7 @@ function getBestFitReason(reason, bestKey) {
 // ============================================
 
 async function fetchAIAnalysis(cityData, userInputs, options, bestKey) {
-  if (!GEMINI_API_KEY || GEMINI_API_KEY === "AIzaSyC9udD6Ttkx_FAUclcn4QAMVqHXLiyLF5o") {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === "YOUR_GEMINI_API_KEY_HERE") {
     console.log('Gemini API key not configured - skipping AI analysis');
     return null;
   }
@@ -171,45 +171,50 @@ PROPERTY DETAILS:
 Address: ${cityData.address}
 Community: ${cityData.community}
 City Assessment: ${currency(cityData.assessed)}
-Market Adjustment Ratio (MAR): ${userInputs.mar.toFixed(2)}
-Adjusted Market Value: ${currency(userInputs.marketValue)}
+Property Condition: ${userInputs.condition}
+Seller Timeline: ${TIMELINE_OPTIONS.find(t => t.value === userInputs.timeline)?.label || userInputs.timeline}
+Reason for Selling: ${SELL_REASONS.find(r => r.value === userInputs.reason)?.label || userInputs.reason}
 
-SELLER SITUATION:
-Condition: ${CONDITIONS.find(c => c.value === userInputs.condition)?.label}
-Selling Reason: ${SELL_REASONS.find(r => r.value === userInputs.reason)?.label}
-Timeline: ${TIMELINE_OPTIONS.find(t => t.value === userInputs.timeline)?.label}
+THREE SELLING OPTIONS ANALYZED:
 
-RECOMMENDED STRATEGY: ${strategyName}
-Expected Net Proceeds: ${currency(options[bestKey].netLow)} - ${currency(options[bestKey].netHigh)}
-Time to Close: ${options[bestKey].speed}
+1) List on MLS (Full Retail):
+   - Speed: ${options.retail.timeframe}
+   - Net Proceeds: ${currency(options.retail.netLow)} - ${currency(options.retail.netHigh)}
+   - Best for: Maximum price, not urgent timeline
 
-Based on current Calgary market conditions and the seller's specific situation, provide 2-3 sentences of personalized insight explaining:
-1. Why this strategy makes sense for their timeline and property condition
-2. One specific market factor they should consider (interest rates, inventory levels, seasonal trends, or buyer demand in their area)
+2) Quick-List (As-Is / Minimal Prep):
+   - Speed: ${options.discount.timeframe}
+   - Net Proceeds: ${currency(options.discount.netLow)} - ${currency(options.discount.netHigh)}
+   - Best for: Balance of speed and price
 
-Be conversational, specific to Calgary, and focus on practical advice. Do not use asterisks or special formatting.`;
+3) Verified Cash Buyer (No Showings):
+   - Speed: ${options.cash.timeframe}
+   - Net Proceeds: ${currency(options.cash.netLow)} - ${currency(options.cash.netHigh)}
+   - Best for: Maximum speed, certainty, convenience
+
+OUR RECOMMENDED STRATEGY: ${strategyName}
+
+TASK: Write 2-3 sentences explaining why "${strategyName}" is the best match for this seller's situation (timeline: ${userInputs.timeline}, condition: ${userInputs.condition}, reason: ${userInputs.reason}). Be specific about how their needs align with the recommended strategy. Be encouraging and honest about what they can expect.`;
 
     const response = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 200,
-        }
+        contents: [{
+          parts: [{ text: prompt }]
+        }]
       })
     });
 
     if (!response.ok) {
-      console.error('Gemini API error:', response.status);
-      return null;
+      const error = await response.text();
+      throw new Error(`Gemini API failed: ${error}`);
     }
 
     const data = await response.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
+    return data.candidates[0].content.parts[0].text;
   } catch (error) {
-    console.error('Error fetching AI analysis:', error);
+    console.error('AI analysis error:', error);
     return null;
   }
 }
@@ -218,113 +223,86 @@ Be conversational, specific to Calgary, and focus on practical advice. Do not us
 // MAIN APP COMPONENT
 // ============================================
 
-function App(){
-  const [address, setAddress] = useState("");
-  const [matches, setMatches] = useState([]);
-  const [searching, setSearching] = useState(false);
+function App() {
+  const [addr, setAddr] = useState("");
+  const [suggestions, setSuggestions] = useState([]);
+  const [fetchingAddr, setFetchingAddr] = useState(false);
   const [cityData, setCityData] = useState(null);
-  const [marData, setMarData] = useState({});
-  
+  const [marTable, setMarTable] = useState({ default: ASSUMPTIONS.marDefault });
   const [condition, setCondition] = useState("");
   const [reason, setReason] = useState("");
   const [timeline, setTimeline] = useState("");
   const [show, setShow] = useState(false);
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 768);
   
+  // State for AI analysis
+  const [aiAnalysis, setAIAnalysis] = useState(null);
   const [loadingInsights, setLoadingInsights] = useState(false);
-  const [aiAnalysis, setAiAnalysis] = useState(null);
-  
+
   const resultsRef = useRef(null);
-  const mapIframeRef = useRef(null);
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  useEffect(()=>{
+    if(resultsRef.current && show){
+      setTimeout(()=>resultsRef.current.scrollIntoView({behavior:"smooth",block:"start"}),100);
+    }
+  },[show]);
 
   useEffect(()=>{
     fetch(MAR_SHEET_URL)
       .then(r=>r.text())
-      .then(csv=>{
-        const lines=csv.trim().split("\n").slice(1);
-        const obj={};
-        lines.forEach(line=>{
-          const parts=line.split(",");
-          if(parts.length>=2){
-            const comm=parts[0].trim().toLowerCase();
-            const marVal=parseFloat(parts[1]);
-            if(!isNaN(marVal)) obj[comm]=marVal;
-          }
-        });
-        setMarData(obj);
-      });
+      .then(t=>{
+        const rows=t.split('\n').slice(1);
+        const map={};
+        for(let row of rows){
+          const [c,v]=row.split(',');
+          if(c&&v) map[c.trim().toLowerCase()]=parseFloat(v);
+        }
+        map.default ??= ASSUMPTIONS.marDefault;
+        setMarTable(map);
+      }).catch(()=>setMarTable({default:ASSUMPTIONS.marDefault}));
   },[]);
 
-  useEffect(()=>{
-    if(!address.trim()){
-      setMatches([]);
-      return;
-    }
-    const t=setTimeout(()=>{
-      setSearching(true);
-      fetch(`${CITY_API}?$limit=10&$q=${encodeURIComponent(address)}`)
-        .then(r=>r.json())
-        .then(d=>{
-          setMatches(d);
-          setSearching(false);
-        })
-        .catch(()=>setSearching(false));
-    },300);
-    return ()=>clearTimeout(t);
-  },[address]);
-
-  const handleSelect=(item)=>{
-    setCityData(item);
-    setAddress(item.address);
-    setMatches([]);
-    setShow(false);
-    setAiAnalysis(null);
-    
-    // Update map with satellite view
-    if (mapIframeRef.current && item.latitude && item.longitude) {
-      const mapUrl = `https://maps.google.com/maps?q=${item.latitude},${item.longitude}&t=k&z=18&output=embed`;
-      mapIframeRef.current.src = mapUrl;
-    }
+  const fetchSuggestions = (q)=>{
+    if((q||"").length<4){ setSuggestions([]); return; }
+    const encoded = encodeURIComponent(q.toUpperCase());
+    fetch(`${CITY_API}?$select=address&$where=upper(address)%20like%20'%25${encoded}%25'&$limit=10`)
+      .then(r=>r.json())
+      .then(d=>setSuggestions([...new Set(d.map(x=>x.address))]))
+      .catch(()=>setSuggestions([]));
   };
 
-  const handleShowOptions = async () => {
-    setShow(true);
-    setLoadingInsights(true);
-    setAiAnalysis(null);
-    
-    setTimeout(() => {
-      resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }, 100);
-
-    // Fetch AI analysis if options are available
-    if (options && marketCore) {
-      const userInputs = {
-        condition,
-        reason,
-        timeline,
-        mar: marketCore.mar,
-        marketValue: marketCore.market
-      };
-
-      try {
-        const analysis = await fetchAIAnalysis(cityData, userInputs, options, bestKey);
-        setAiAnalysis(analysis);
-      } catch (error) {
-        console.error('Error getting AI analysis:', error);
-      } finally {
-        setLoadingInsights(false);
-      }
-    } else {
-      setLoadingInsights(false);
-    }
+  const selectAddress = (address)=>{
+    setAddr(address); setSuggestions([]); setFetchingAddr(true);
+    const enc = encodeURIComponent(address.toUpperCase());
+    fetch(`${CITY_API}?$select=address,comm_name,assessed_value&$where=upper(address)%20like%20'%25${enc}%25'&$limit=1`)
+      .then(r=>r.json())
+      .then(d=>{
+        if(d.length){
+          const it=d[0];
+          setCityData({ address:it.address, community:(it.comm_name||"").toLowerCase(), assessed:parseFloat(it.assessed_value||"0") });
+        }else setCityData(null);
+      })
+      .catch(()=>{
+        setCityData(null);
+        alert("Couldn't find that address in City database. Try: '123 Main Street SW' format");
+      })
+      .finally(()=>setFetchingAddr(false));
   };
+
+  useEffect(()=>{ const t=setTimeout(()=>fetchSuggestions(addr),300); return ()=>clearTimeout(t); },[addr]);
 
   const marketCore = useMemo(()=>{
-    if(!cityData || !condition) return null;
-    const mar = marData[cityData.community.toLowerCase()] || ASSUMPTIONS.marDefault;
-    const condMult = ASSUMPTIONS.conditionMult[condition];
-    const market = Math.round(cityData.assessed * mar * condMult);
-    return { mar, condMult, market };
-  },[cityData, condition, marData]);
+    if(!cityData?.assessed) return null;
+    const mar = marTable[cityData.community] ?? marTable.default;
+    const condMult = ASSUMPTIONS.conditionMult[condition] ?? 1.0;
+    return { mar, condMult, market: cityData.assessed * mar * condMult };
+  },[cityData, marTable, condition]);
 
   const options = useMemo(()=>{
     if(!marketCore) return null;
@@ -393,128 +371,239 @@ function App(){
     return {retail:addRange(retail),discount:addRange(discount),cash:addRange(cash)};
   },[marketCore,condition]);
 
-  const bestKey = useMemo(()=>{
-    if(!reason || !condition) return null;
-    return chooseBest(reason, condition);
-  },[reason, condition]);
-
+  const bestKey = useMemo(()=>chooseBest(reason,condition),[reason,condition]);
   const ready = !!(cityData?.assessed && condition && reason && timeline);
 
-  const handleSubmit = (e) => {
+  // NEW: Fetch market insights when "See My Options" is clicked
+  const handleShowOptions = async () => {
+    setShow(true);
+    setLoadingInsights(true);
+    setAIAnalysis(null);
+
+    // Fetch AI analysis directly (no market insights needed)
+    if (options) {
+      const analysis = await fetchAIAnalysis(
+        cityData,
+        { condition, reason, timeline },
+        options,
+        bestKey
+      );
+      setAIAnalysis(analysis);
+    }
+
+    setLoadingInsights(false);
+  };
+
+  const generatePDF = () => {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    
+    // Header
+    doc.setFontSize(20);
+    doc.setFont(undefined, 'bold');
+    doc.text("Calgary Home Pricing Report", 20, 20);
+    
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    doc.text(`Property: ${cityData.address}`, 20, 30);
+    doc.text(`Community: ${cityData.community.toUpperCase()}`, 20, 35);
+    doc.text(`City Assessment: ${currency(cityData.assessed)}`, 20, 40);
+    doc.text(`Condition: ${condition}`, 20, 45);
+    doc.text(`Timeline: ${TIMELINE_OPTIONS.find(t=>t.value===timeline)?.label}`, 20, 50);
+    
+    // Market Analysis
+    doc.setFontSize(14);
+    doc.setFont(undefined, 'bold');
+    doc.text("Market Analysis", 20, 60);
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    doc.text(`Market Adjustment Ratio: ${((marketCore.mar-1)*100).toFixed(1)}%`, 20, 68);
+    doc.text(`Condition Multiplier: ${marketCore.condMult}x`, 20, 73);
+    doc.text(`Estimated Market Value: ${currency(marketCore.market)}`, 20, 78);
+    
+    // NEW: Add market insights to PDF
+    let yPos = 88;
+    
+    // Add AI analysis to PDF
+    if (aiAnalysis) {
+      doc.setFontSize(12);
+      doc.setFont(undefined, 'bold');
+      doc.text("AI Market Analysis", 20, yPos);
+      yPos += 6;
+      
+      doc.setFontSize(9);
+      doc.setFont(undefined, 'normal');
+      const wrapped = doc.splitTextToSize(aiAnalysis, 170);
+      wrapped.forEach(line => {
+        doc.text(line, 20, yPos);
+        yPos += 5;
+      });
+      yPos += 5;
+    }
+    
+    // Options
+    yPos += 5;
+    ["retail", "discount", "cash"].forEach((key, idx) => {
+      const o = options[key];
+      const isBest = key === bestKey;
+      
+      if (idx > 0) yPos += 45;
+      
+      doc.setFontSize(12);
+      doc.setFont(undefined, 'bold');
+      doc.text(o.title + (isBest ? " (RECOMMENDED)" : ""), 20, yPos);
+      
+      doc.setFontSize(9);
+      doc.setFont(undefined, 'normal');
+      doc.text(`Speed: ${o.speed}`, 20, yPos + 6);
+      doc.text(`Sale Price Range: ${currency(o.grossLow)} - ${currency(o.grossHigh)}`, 20, yPos + 12);
+      doc.text(`Commission/Fees: ${currency(o.fee)}`, 20, yPos + 18);
+      doc.text(`Closing Costs: ${currency(o.close)}`, 20, yPos + 24);
+      doc.setFont(undefined, 'bold');
+      doc.text(`Estimated Net: ${currency(o.netLow)} - ${currency(o.netHigh)}`, 20, yPos + 30);
+      doc.setFont(undefined, 'normal');
+      doc.text(`• ${o.notes[0]}`, 25, yPos + 36);
+      if (o.notes[1]) doc.text(`• ${o.notes[1]}`, 25, yPos + 41);
+    });
+    
+    // Disclaimer
+    doc.setFontSize(8);
+    doc.text("Disclaimer: Estimates based on City assessment and market data. Actual values may vary.", 20, 270);
+    doc.text("Contact Drew for verified comparables and personalized analysis.", 20, 275);
+    
+    return doc;
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
     const formData = new FormData(e.target);
     const name = formData.get('name');
     const phone = formData.get('phone');
     const email = formData.get('email');
     
-    alert(`Thank you ${name}! We'll send your detailed report to ${email} shortly.`);
+    try {
+      // Generate PDF
+      const pdf = generatePDF();
+      const pdfBlob = pdf.output('blob');
+      
+      // Create FormData for Google Forms
+      const gFormData = new FormData();
+      // Replace these entry IDs with your actual Google Form field IDs
+      gFormData.append('entry.NAME_FIELD_ID', name); 
+      gFormData.append('entry.PHONE_FIELD_ID', phone);
+      gFormData.append('entry.EMAIL_FIELD_ID', email);
+      gFormData.append('entry.ADDRESS_FIELD_ID', cityData.address);
+      gFormData.append('entry.COMMUNITY_FIELD_ID', cityData.community);
+      gFormData.append('entry.CONDITION_FIELD_ID', condition);
+      gFormData.append('entry.REASON_FIELD_ID', reason);
+      gFormData.append('entry.TIMELINE_FIELD_ID', timeline);
+      gFormData.append('entry.RETAIL_NET_FIELD_ID', `${currency(options.retail.netLow)} - ${currency(options.retail.netHigh)}`);
+      gFormData.append('entry.DISCOUNT_NET_FIELD_ID', `${currency(options.discount.netLow)} - ${currency(options.discount.netHigh)}`);
+      gFormData.append('entry.CASH_NET_FIELD_ID', `${currency(options.cash.netLow)} - ${currency(options.cash.netHigh)}`);
+      
+      // Submit to Google Forms (no-cors mode)
+      fetch(GOOGLE_FORM_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        body: gFormData
+      });
+      
+      // Download PDF
+      pdf.save(`Calgary_Home_Report_${cityData.address.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`);
+      
+      // Show success message
+      alert("✅ Success! Your detailed report has been downloaded. Check your email - I'll be in touch within 24 hours with verified comparables and your cash offer.");
+      
+      // Reset form
+      setShow(false);
+      
+    } catch (error) {
+      console.error('Submission error:', error);
+      alert("Report generated! I'll be in touch within 24 hours.");
+    }
   };
 
-  // Get community statistics
-  const communityStats = useMemo(() => {
-    if (!cityData) return null;
-    
-    // These would ideally come from actual market data
-    // For now, using placeholder calculations
-    const avgDOM = 48; // Average days on market
-    const avgPricePerSqFt = Math.round(cityData.assessed / 1400); // Assuming ~1400 sq ft average
-    const medianPrice = Math.round(cityData.assessed * (marData[cityData.community.toLowerCase()] || ASSUMPTIONS.marDefault));
-    const activeListings = 42; // Placeholder
-    
-    return {
-      listed: activeListings,
-      avgDOM: avgDOM,
-      avgPricePerSqFt: avgPricePerSqFt,
-      medianPrice: medianPrice
-    };
-  }, [cityData, marData]);
+  return (
+    <div className="max-w-5xl mx-auto p-4 md:p-6">
+      {/* Hero Section */}
+      <div className="text-center mb-6 md:mb-8">
+        <h1 className="text-3xl md:text-4xl font-bold text-slate-900 mb-2 md:mb-3">
+          Facing Foreclosure? Behind on Payments?<br className="hidden md:block"/> Need to Sell Fast?
+        </h1>
+        <p className="text-lg md:text-xl text-slate-600 mb-2">
+          Get your <strong>actual cash offer</strong> in 60 seconds
+        </p>
+        <p className="text-xs md:text-sm text-slate-500">
+          Based on City of Calgary official assessment • No obligation • Licensed Realtor
+        </p>
+      </div>
 
-  return(
-    <div className="max-w-4xl mx-auto p-4 py-8">
-      <h1 className="text-2xl md:text-4xl font-bold text-slate-800 mb-2">What's Your Home Worth?</h1>
-      <p className="text-sm md:text-base text-slate-600 mb-6">Get 3 selling options with realistic net proceeds (retail, quick-list, cash)</p>
+      {/* Trust Signals */}
+      <div className="flex flex-wrap justify-center gap-4 md:gap-8 mb-6 text-xs md:text-sm text-slate-600">
+        <div className="flex items-center gap-2">
+          <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" />
+          <span>Licensed AB Realtor</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" />
+          <span>100+ Families Helped</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" />
+          <span>Same-Day Cash Offers</span>
+        </div>
+      </div>
 
       <div className="bg-white rounded-2xl shadow p-4 md:p-6 mb-6">
-        <label className="block text-sm md:text-base font-semibold mb-2">Enter Your Calgary Address</label>
+        <label className="block text-sm font-semibold text-slate-700 mb-2">Street Address (Calgary)</label>
         <div className="relative">
-          <input
-            className="w-full border-2 border-slate-300 rounded-lg p-3 text-sm md:text-base focus:border-blue-500 focus:outline-none"
-            placeholder="e.g. 123 Main St SW"
-            value={address}
-            onChange={(e)=>setAddress(e.target.value)}
-          />
-          {searching && <div className="absolute right-3 top-3 text-slate-400 text-sm">Searching...</div>}
-          {matches.length>0 && (
-            <div className="absolute z-10 w-full bg-white border border-slate-200 rounded-lg mt-1 max-h-60 overflow-y-auto shadow-lg">
-              {matches.map((m,i)=>(
-                <div key={i} onClick={()=>handleSelect(m)} className="p-3 hover:bg-slate-50 cursor-pointer text-xs md:text-sm border-b last:border-b-0">
-                  <div className="font-semibold text-slate-800">{m.address}</div>
-                  <div className="text-slate-500">{m.community} • {currency(m.assessed)} assessed</div>
-                </div>
+          <input className="w-full border rounded-lg p-3 focus:ring-2 focus:ring-blue-600 text-sm md:text-base"
+                 placeholder="Start typing your address…" value={addr}
+                 onChange={(e)=>setAddr(e.target.value)} />
+          {suggestions.length>0 && (
+            <ul className="absolute z-10 bg-white border rounded-lg mt-1 w-full max-h-64 overflow-y-auto shadow">
+              {suggestions.map(s=>(
+                <li key={s} onClick={()=>selectAddress(s)} className="px-3 py-2 hover:bg-blue-50 cursor-pointer text-sm">{s}</li>
               ))}
+            </ul>
+          )}
+          {fetchingAddr && <div className="text-xs text-blue-600 mt-1">Fetching City assessment…</div>}
+          {cityData && !fetchingAddr && (
+            <div className="text-xs text-green-700 mt-1">
+              ✓ Found {cityData.community.toUpperCase()} — City Assessed: {currency(cityData.assessed)}
             </div>
           )}
         </div>
 
+        {/* Map */}
+        {cityData && !fetchingAddr && (
+          <iframe
+            key={cityData.address}
+            title="map"
+            width="100%"
+            height={windowWidth < 768 ? "250" : "350"}
+            style={{
+              border: 0,
+              borderRadius: "12px",
+              marginTop: "12px",
+              boxShadow: "0 2px 10px rgba(0,0,0,0.1)",
+            }}
+            loading="lazy"
+            allowFullScreen
+            src={`https://www.google.com/maps?q=${encodeURIComponent(
+              cityData.address + ", Calgary AB"
+            )}&output=embed`}
+          ></iframe>
+        )}
+
+        {/* Progress Indicator */}
         {cityData && (
-          <div className="mt-4 bg-slate-50 rounded-xl p-4">
-            <h3 className="font-bold text-slate-800 mb-2 text-sm md:text-base">{cityData.address}</h3>
-            <div className="grid grid-cols-2 gap-3 text-xs md:text-sm mb-4">
-              <div><span className="text-slate-600">Community:</span> <span className="font-semibold">{cityData.community}</span></div>
-              <div><span className="text-slate-600">Assessed:</span> <span className="font-semibold">{currency(cityData.assessed)}</span></div>
-            </div>
-            
-            {/* Map with satellite view */}
-            {cityData.latitude && cityData.longitude && (
-              <div className="rounded-lg overflow-hidden border border-slate-200">
-                <iframe
-                  ref={mapIframeRef}
-                  width="100%"
-                  height="300"
-                  style={{ border: 0 }}
-                  loading="lazy"
-                  src={`https://maps.google.com/maps?q=${cityData.latitude},${cityData.longitude}&t=k&z=18&output=embed`}
-                ></iframe>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-4 mb-4">
+            <div className="flex items-center justify-between text-xs md:text-sm flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" />
+                <span className="text-slate-600">Address</span>
               </div>
-            )}
-          </div>
-        )}
-
-        {/* Community Statistics Widget */}
-        {cityData && communityStats && (
-          <div className="mt-6 bg-white border border-slate-200 rounded-xl p-6">
-            <h3 className="text-lg md:text-xl font-bold text-slate-800 mb-1">
-              Homes for Sale in {cityData.community}
-            </h3>
-            <p className="text-sm text-slate-500 mb-4">
-              {cityData.community} Real Estate Listings • November 15, 2025
-            </p>
-            
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="text-center">
-                <div className="text-3xl md:text-4xl font-bold text-slate-800">{communityStats.listed}</div>
-                <div className="text-sm text-slate-600 mt-1">Listed</div>
-              </div>
-              <div className="text-center">
-                <div className="text-3xl md:text-4xl font-bold text-slate-800">{communityStats.avgDOM}</div>
-                <div className="text-sm text-slate-600 mt-1">Avg. DOM</div>
-              </div>
-              <div className="text-center">
-                <div className="text-3xl md:text-4xl font-bold text-slate-800">${communityStats.avgPricePerSqFt}</div>
-                <div className="text-sm text-slate-600 mt-1">Avg. $ / Sq.Ft.</div>
-              </div>
-              <div className="text-center">
-                <div className="text-3xl md:text-4xl font-bold text-slate-800">{currency(communityStats.medianPrice)}</div>
-                <div className="text-sm text-slate-600 mt-1">Med. List Price</div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {cityData && !show && (
-          <div className="mt-6 flex flex-wrap gap-4 items-center justify-between pb-4 border-b">
-            <div className="text-sm font-semibold text-slate-700">Tell us about your situation:</div>
-            <div className="flex flex-wrap gap-3 text-xs md:text-sm">
               <div className="flex items-center gap-2">
                 {condition ? <CheckCircle className="w-4 h-4 md:w-5 md:h-5 text-green-600 flex-shrink-0" /> : <div className="w-4 h-4 md:w-5 md:h-5 rounded-full border-2 border-slate-300 flex-shrink-0" />}
                 <span className={condition ? "text-slate-600" : "text-slate-400"}>Condition</span>
