@@ -295,95 +295,28 @@ function App(){
       resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 100);
 
-    const userInputs = {
-      condition,
-      reason,
-      timeline,
-      mar: marData[cityData.community.toLowerCase()] || ASSUMPTIONS.marDefault,
-      marketValue: Math.round(cityData.assessed * (marData[cityData.community.toLowerCase()] || ASSUMPTIONS.marDefault) * ASSUMPTIONS.conditionMult[condition])
-    };
+    // Fetch AI analysis if options are available
+    if (options && marketCore) {
+      const userInputs = {
+        condition,
+        reason,
+        timeline,
+        mar: marketCore.mar,
+        marketValue: marketCore.market
+      };
 
-    const bk = chooseBest(reason, condition);
-    const opts = buildOptions(userInputs, cityData);
-
-    try {
-      const analysis = await fetchAIAnalysis(cityData, userInputs, opts, bk);
-      setAiAnalysis(analysis);
-    } catch (error) {
-      console.error('Error getting AI analysis:', error);
-    } finally {
+      try {
+        const analysis = await fetchAIAnalysis(cityData, userInputs, options, bestKey);
+        setAiAnalysis(analysis);
+      } catch (error) {
+        console.error('Error getting AI analysis:', error);
+      } finally {
+        setLoadingInsights(false);
+      }
+    } else {
       setLoadingInsights(false);
     }
   };
-
-  function buildOptions(userInputs, cityData) {
-    const mar = userInputs.mar;
-    const condMult = ASSUMPTIONS.conditionMult[userInputs.condition];
-    const market = Math.round(cityData.assessed * mar * condMult);
-    const bandPct = ASSUMPTIONS.displayBandPct;
-
-    const retail = {
-      title: "List on MLS (Full Retail)",
-      speed: ASSUMPTIONS.retail.daysToClose,
-      grossLow: Math.round(market * (1 - bandPct)),
-      grossHigh: Math.round(market * (1 + bandPct)),
-      fee: 0,
-      close: 0,
-      netLow: 0,
-      netHigh: 0,
-      notes: [
-        "Full market exposure",
-        "Multiple showings required",
-        "Subject to financing/inspection"
-      ]
-    };
-    retail.fee = calcCalgaryCommission((retail.grossLow + retail.grossHigh) / 2);
-    retail.close = Math.round(((retail.grossLow + retail.grossHigh) / 2) * ASSUMPTIONS.retail.closingCostPct);
-    retail.netLow = retail.grossLow - retail.fee - retail.close;
-    retail.netHigh = retail.grossHigh - retail.fee - retail.close;
-
-    const discount = {
-      title: "Quick-List (As-Is / Minimal Prep)",
-      speed: ASSUMPTIONS.discount.daysToClose,
-      grossLow: Math.round(market * (1 - ASSUMPTIONS.discount.priceDiscountPct) * (1 - bandPct)),
-      grossHigh: Math.round(market * (1 - ASSUMPTIONS.discount.priceDiscountPct) * (1 + bandPct)),
-      fee: 0,
-      close: 0,
-      netLow: 0,
-      netHigh: 0,
-      notes: [
-        "No repairs/staging needed",
-        "Priced to move quickly",
-        "Still uses MLS exposure"
-      ]
-    };
-    discount.fee = calcCalgaryCommission((discount.grossLow + discount.grossHigh) / 2);
-    discount.close = Math.round(((discount.grossLow + discount.grossHigh) / 2) * ASSUMPTIONS.discount.closingCostPct);
-    discount.netLow = discount.grossLow - discount.fee - discount.close;
-    discount.netHigh = discount.grossHigh - discount.fee - discount.close;
-
-    const cashMult = ASSUMPTIONS.cash.multiplierByCondition[userInputs.condition];
-    const cash = {
-      title: "Verified Cash Buyer (No Showings)",
-      speed: ASSUMPTIONS.cash.daysToClose,
-      grossLow: Math.round(market * cashMult * (1 - bandPct)),
-      grossHigh: Math.round(market * cashMult * (1 + bandPct)),
-      fee: 0,
-      close: 0,
-      netLow: 0,
-      netHigh: 0,
-      notes: [
-        "No showings or open houses",
-        "No repairs required",
-        "Guaranteed close (no financing)"
-      ]
-    };
-    cash.close = Math.round(((cash.grossLow + cash.grossHigh) / 2) * ASSUMPTIONS.cash.closingCostPct);
-    cash.netLow = cash.grossLow - cash.fee - cash.close;
-    cash.netHigh = cash.grossHigh - cash.fee - cash.close;
-
-    return { retail, discount, cash };
-  }
 
   const marketCore = useMemo(()=>{
     if(!cityData || !condition) return null;
@@ -394,16 +327,78 @@ function App(){
   },[cityData, condition, marData]);
 
   const options = useMemo(()=>{
-    if(!marketCore || !reason || !timeline) return null;
-    return buildOptions({ condition, reason, timeline, mar: marketCore.mar, marketValue: marketCore.market }, cityData);
-  },[marketCore, reason, timeline, condition, cityData]);
+    if(!marketCore) return null;
+    const band=ASSUMPTIONS.displayBandPct;
+    
+    const retail=(()=>{ 
+      const g=marketCore.market;
+      const f=calcCalgaryCommission(g);
+      const c=g*ASSUMPTIONS.retail.closingCostPct;
+      const n=g-f-c; 
+      return {
+        key:"retail",
+        title:"List on MLS (Full Retail)",
+        gross:g,
+        fee:f,
+        close:c,
+        net:n,
+        speed:ASSUMPTIONS.retail.daysToClose,
+        notes:["Max exposure & price","Prep, showings, conditions typical"]
+      };
+    })();
+    
+    const discount=(()=>{ 
+      const b=marketCore.market*(1-ASSUMPTIONS.discount.priceDiscountPct);
+      const f=calcCalgaryCommission(b) * 0.85;
+      const c=b*ASSUMPTIONS.discount.closingCostPct;
+      const n=b-f-c; 
+      return {
+        key:"discount",
+        title:"Quick-List (As-Is / Minimal Prep)",
+        gross:b,
+        fee:f,
+        close:c,
+        net:n,
+        speed:ASSUMPTIONS.discount.daysToClose,
+        notes:["Fewer showings","Some price tradeoff for speed"]
+      };
+    })();
+    
+    const cash=(()=>{ 
+      const m=ASSUMPTIONS.cash.multiplierByCondition[condition]??0.85;
+      const b=marketCore.market*m;
+      const f=b*ASSUMPTIONS.cash.commissionPct;
+      const c=b*ASSUMPTIONS.cash.closingCostPct;
+      const n=b-f-c; 
+      return {
+        key:"cash",
+        title:"Verified Cash Buyer (No Showings)",
+        gross:b,
+        fee:f,
+        close:c,
+        net:n,
+        speed:ASSUMPTIONS.cash.daysToClose,
+        notes:["Fast, certain closing","Lower price = speed & convenience","As-is condition accepted"]
+      };
+    })();
+    
+    const addRange=o=>({
+      ...o,
+      grossLow:o.gross*(1-band),
+      grossHigh:o.gross*(1+band),
+      netLow:(o.gross*(1-band))-o.fee-o.close,
+      netHigh:(o.gross*(1+band))-o.fee-o.close
+    });
+    
+    return {retail:addRange(retail),discount:addRange(discount),cash:addRange(cash)};
+  },[marketCore,condition]);
 
   const bestKey = useMemo(()=>{
     if(!reason || !condition) return null;
     return chooseBest(reason, condition);
   },[reason, condition]);
 
-  const ready = !!(cityData && condition && reason && timeline);
+  const ready = !!(cityData?.assessed && condition && reason && timeline);
 
   const handleSubmit = (e) => {
     e.preventDefault();
